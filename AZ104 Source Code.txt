@@ -1,0 +1,206 @@
+1. Login to Azure:
+
+az login
+
+2. Create a Resource group
+
+az group create \
+    --name rand-rg \
+    --location eastus
+
+3. Create a Virtual machine
+
+az network vnet create \
+    --resource-group rand-rg \
+    --location eastus \
+    --name randVNet \
+    --address-prefixes 10.1.0.0/16 \
+    --subnet-name randBackendSubnet \
+    --subnet-prefixes 10.1.0.0/24
+
+4. Create a public IP address
+
+az network public-ip create \
+    --resource-group rand-rg \
+    --name randPublicIP \
+    --sku Standard \
+    --zone 1 2 3
+
+5. Create a load balancer
+
+az network lb create \
+    --resource-group rand-rg \
+    --name randLoadBalancer \
+    --sku Standard \
+    --public-ip-address randPublicIP \
+    --frontend-ip-name randFrontEnd \
+    --backend-pool-name randBackEndPool
+
+6. Create the health probe
+
+az network lb probe create \
+    --resource-group rand-rg \
+    --lb-name randLoadBalancer \
+    --name randHealthProbe \
+    --protocol tcp \
+    --port 80
+
+7. Create the load balancer rule
+
+az network lb rule create \
+    --resource-group rand-rg \
+    --lb-name randLoadBalancer \
+    --name randHTTPRule \
+    --protocol tcp \
+    --frontend-port 80 \
+    --backend-port 80 \
+    --frontend-ip-name randFrontEnd \
+    --backend-pool-name randBackEndPool \
+    --probe-name randHealthProbe \
+    --disable-outbound-snat true \
+    --idle-timeout 15 \
+    --enable-tcp-reset true
+
+8. Create a network security group
+
+az network nsg create \
+    --resource-group rand-rg \
+    --name randNSG
+
+9. Create a network security group rule
+
+az network nsg rule create \
+    --resource-group rand-rg \
+    --nsg-name randNSG \
+    --name randNSGRuleHTTP \
+    --protocol '*' \
+    --direction inbound \
+    --source-address-prefix '*' \
+    --source-port-range '*' \
+    --destination-address-prefix '*' \
+    --destination-port-range 80 \
+    --access allow \
+    --priority 200
+
+10. Create a bastion host
+
+10.a Create a public IP address
+
+az network public-ip create \
+    --resource-group rand-rg \
+    --name randBastionIP \
+    --sku Standard \
+    --zone 1 2 3
+
+10.b Create a bastion subnet
+
+az network vnet subnet create \
+    --resource-group rand-rg \
+    --name AzureBastionSubnet \
+    --vnet-name randVNet \
+    --address-prefixes 10.1.1.0/27
+
+10.c Create bastion host
+
+az network bastion create \
+    --resource-group rand-rg \
+    --name randBastionHost \
+    --public-ip-address randBastionIP \
+    --vnet-name randVNet \
+    --location eastus
+
+11. Create backend servers
+
+11.a Create network interfaces for the virtual machines
+
+array=(randNicVM1 randNicVM2)
+  for vmnic in "${array[@]}"
+  do
+    az network nic create \
+        --resource-group rand-rg \
+        --name $vmnic \
+        --vnet-name randVNet \
+        --subnet randBackEndSubnet \
+        --network-security-group randNSG
+  done
+
+11.b Create virtual machines
+
+az vm create \
+    --resource-group rand-rg \
+    --name randVM1 \
+    --nics randNicVM1 \
+    --image win2019datacenter \
+    --admin-username azureuser \
+    --zone 1 \
+    --no-wait
+
+az vm create \
+    --resource-group rand-rg \
+    --name randVM2 \
+    --nics randNicVM2 \
+    --image win2019datacenter \
+    --admin-username azureuser \
+    --zone 2 \
+    --no-wait
+
+11.c Add virtual machines to load balancer backend pool
+
+array=(randNicVM1 randNicVM2)
+  for vmnic in "${array[@]}"
+  do
+    az network nic ip-config address-pool add \
+     --address-pool randBackendPool \
+     --ip-config-name ipconfig1 \
+     --nic-name $vmnic \
+     --resource-group rand-rg \
+     --lb-name randLoadBalancer
+  done
+
+12. Create NAT gateway
+
+12.a Create public IP
+
+az network public-ip create \
+    --resource-group rand-rg \
+    --name randNATgatewayIP \
+    --sku Standard \
+    --zone 1 2 3
+
+12.b Create NAT gateway resource
+
+az network nat gateway create \
+    --resource-group rand-rg \
+    --name randNATgateway \
+    --public-ip-addresses randNATgatewayIP \
+    --idle-timeout 10
+
+12.c Associate NAT gateway with subnet
+
+az network vnet subnet update \
+    --resource-group rand-rg \
+    --vnet-name randVNet \
+    --name randBackendSubnet \
+    --nat-gateway randNATgateway
+
+13. Install IIS
+
+array=(randVM1 randVM2)
+    for vm in "${array[@]}"
+    do
+     az vm extension set \
+       --publisher Microsoft.Compute \
+       --version 1.8 \
+       --name CustomScriptExtension \
+       --vm-name $vm \
+       --resource-group rand-rg \
+       --settings '{"commandToExecute":"powershell Add-WindowsFeature Web-Server; powershell Add-Content -Path \"C:\\inetpub\\wwwroot\\Default.htm\" -Value $($env:computername)"}'
+  done
+
+14. Test the load balancer 
+
+az network public-ip show \
+    --resource-group rand-rg \
+    --name randPublicIP \
+    --query ipAddress \
+    --output tsv
